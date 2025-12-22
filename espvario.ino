@@ -161,6 +161,17 @@ void updateDynamicParts(float temp, float pressure) {
   tft.print(speedStr);
 
   // m/s wird NICHT hier überschrieben → bleibt stehen!
+    // SERIELLE AUSGABE
+  Serial.print("T: ");
+  Serial.print(temp, 1);
+  Serial.print(" °C, P: ");
+  Serial.print(pressure, 1);
+  Serial.print(" Pa, ");
+  Serial.print(pressureRising ? "DOWN" : "UP  ");
+  Serial.print(" ");
+  Serial.print(speedStr);
+  Serial.println(" m/s");
+  
 }
 
 void drawGraph() {
