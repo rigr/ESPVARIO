@@ -40,7 +40,7 @@ bool pressureRising = false;
 float verticalSpeed = 0.0;
 
 unsigned long previousMeasureMillis = 0;
-const unsigned long measureInterval = 300;
+const unsigned long measureInterval = 200; // measurement and screen update rate done here - had it on 300, prefer 200
 
 int updateCounter = 0;
 const int FULL_REFRESH_EVERY = 20;
