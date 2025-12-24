@@ -1,0 +1,351 @@
+// ESP_VARIO - now measuring battery voltage
+
+#include <Arduino.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_NeoPixel.h>
+#include <cmath>
+
+// Pins und Objekte
+#define TFT_POWER     21
+#define TFT_CS        7
+#define TFT_DC        39
+#define TFT_RST       40
+#define TFT_BACKLIGHT 45
+#define ONBOARD_RED_LED 13
+#define RGB_LED_PIN     33
+
+#define BAT_ADC_PIN   4       // GPIO für Batterie
+#define BAT_DIVIDER   2.0f    // Spannungsteiler
+
+float filteredVoltage = 0.0;
+const float FILTER_ALPHA = 0.15f;
+
+int voltageToPercent(float v) {
+  // Angepasst, dass 4.02 V als ~79% voll gilt
+  if (v >= 4.02) return 79;
+  if (v >= 3.95) return map(v*100, 395, 402, 70, 79);
+  if (v >= 3.90) return map(v*100, 390, 395, 60, 70);
+  if (v >= 3.85) return map(v*100, 385, 390, 50, 60);
+  if (v >= 3.80) return map(v*100, 380, 385, 40, 50);
+  if (v >= 3.75) return map(v*100, 375, 380, 30, 40);
+  if (v >= 3.70) return map(v*100, 370, 375, 20, 30);
+  if (v >= 3.65) return map(v*100, 365, 370, 10, 20);
+  return 0;
+}
+
+Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_BMP280 bmp;
+Adafruit_NeoPixel pixel(1, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// Farben
+#define RED_COLOR      ST77XX_RED
+#define GREEN_COLOR    0x07E0
+#define WHITE_COLOR    ST77XX_WHITE
+#define BLACK_COLOR    ST77XX_BLACK
+#define BLUE_COLOR     ST77XX_BLUE
+#define CYAN_COLOR     ST77XX_CYAN
+#define DARK_BLUE      0x001F
+#define DARK_RED       0x7800
+#define GRAY_COLOR     0x8410
+
+const int HISTORY_SIZE = 50;
+float pressureHistory[HISTORY_SIZE];
+int historyIndex = 0;
+bool historyFull = false;
+
+bool pressureRising = false;
+float verticalSpeed = 0.0;
+
+unsigned long previousMeasureMillis = 0;
+const unsigned long measureInterval = 200;
+
+int updateCounter = 0;
+const int FULL_REFRESH_EVERY = 20;
+
+bool showStartup = true;
+unsigned long startupStartTime = 0;
+const unsigned long startupDuration = 4000;
+
+const int GRAPH_X_LEFT = 10;
+const int GRAPH_WIDTH = tft.width() - 20;
+
+#define GRAPH_TOP       87
+#define GRAPH_BOTTOM    (tft.height() - 5)
+
+#define TEMP_VALUE_X    94
+#define TEMP_VALUE_Y    10
+#define PRESS_VALUE_X   83
+#define PRESS_VALUE_Y   30
+#define MODE_TEXT_X     5
+#define MODE_TEXT_Y     55
+#define SPEED_VALUE_X   140
+#define SPEED_VALUE_Y   55
+
+// Position für gestapeltes m/s – sicher außerhalb des Löschbereichs
+#define MS_X            (tft.width() - 22)
+#define MS_Y_M          58
+#define MS_Y_LINE       67
+#define MS_Y_S          69
+
+void setLeds() {
+  digitalWrite(ONBOARD_RED_LED, pressureRising ? HIGH : LOW);
+  if (pressureRising) {
+    pixel.setPixelColor(0, pixel.Color(255, 0, 0));
+  } else {
+    pixel.setPixelColor(0, pixel.Color(0, 255, 0));
+  }
+  pixel.show();
+}
+
+void drawStartup() {
+  tft.fillScreen(BLACK_COLOR);
+  tft.drawRect(0, 0, tft.width(), tft.height(), BLUE_COLOR);
+
+  tft.setTextColor(WHITE_COLOR);
+  tft.setTextSize(3);
+  tft.setCursor(20, tft.height() / 2 - 44);
+  tft.println("ESPVARIO");
+
+  tft.setTextColor(DARK_BLUE);
+  tft.setCursor(20, tft.height() / 2 - 10);
+  tft.println("RG 12/2025");
+
+  tft.setTextSize(2);
+  tft.setTextColor(DARK_RED);
+  tft.setCursor(20, tft.height() / 2 + 30);
+  tft.println("V. 0.9b");
+}
+
+void drawStaticParts() {
+  tft.fillScreen(BLACK_COLOR);
+  tft.drawRect(0, 0, tft.width(), tft.height(), BLUE_COLOR);  // Voller Rahmen
+
+  tft.setTextSize(2);
+  tft.setTextColor(WHITE_COLOR);
+
+  // Temperatur / Druck Position leicht nach links
+  tft.setCursor(15, 10);
+  tft.print("Temp");
+  tft.setCursor(15, PRESS_VALUE_Y);
+  tft.print("Druck");
+
+  tft.setCursor(TEMP_VALUE_X + 38, 10);  // 20px nach links verschoben
+  tft.print(" C");
+
+  tft.setCursor(PRESS_VALUE_X + 48, 30); // 20px nach links
+  tft.print(" hPa");
+
+  // Batterieanzeige oben rechts
+  tft.setCursor(tft.width() - 66, 10);
+  tft.print("Batt%");
+  tft.setCursor(tft.width() - 50, 30);
+  tft.print("0"); // Initialwert, wird später aktualisiert
+
+  // Gestapeltes m/s – sicher und dauerhaft sichtbar
+  tft.setTextSize(1);
+  tft.setTextColor(DARK_BLUE);
+  tft.setCursor(MS_X, MS_Y_M);
+  tft.print("m");
+  tft.drawFastHLine(MS_X-2, MS_Y_LINE, 10, DARK_BLUE);  // Unterstrich
+  tft.setCursor(MS_X, MS_Y_S);
+  tft.print("s");
+}
+
+void updateDynamicParts(float temp, float pressure) {
+  char buf[10];
+
+  // Temperatur
+  tft.fillRect(TEMP_VALUE_X, TEMP_VALUE_Y, 48, 22, BLACK_COLOR);
+  tft.setTextSize(2);
+  tft.setTextColor(WHITE_COLOR);
+  tft.setCursor(TEMP_VALUE_X, TEMP_VALUE_Y);
+  sprintf(buf, "%.1f", temp);
+  tft.print(buf);
+
+  // Druck
+  tft.fillRect(PRESS_VALUE_X, PRESS_VALUE_Y, 60, 22, BLACK_COLOR);
+  tft.setTextColor(WHITE_COLOR);
+  tft.setCursor(PRESS_VALUE_X, PRESS_VALUE_Y);
+  sprintf(buf, "%.1f", pressure / 100.0);
+  tft.print(buf);
+
+  // Batterie aus ADC
+  int raw = analogRead(BAT_ADC_PIN);
+  float adcVoltage = raw * 3.3f / 4095.0f;
+  float batteryVoltage = adcVoltage * BAT_DIVIDER;
+
+  filteredVoltage = filteredVoltage * (1.0f - FILTER_ALPHA) + batteryVoltage * FILTER_ALPHA;
+  int battPercent = voltageToPercent(filteredVoltage);
+
+  tft.fillRect(tft.width() - 56, 30, 40, 22, BLACK_COLOR); // alten Wert löschen
+  tft.setCursor(tft.width() - 50, 30);
+  tft.print(battPercent);
+
+  // STEIGEN / SINKEN + Geschwindigkeit
+  tft.fillRect(MODE_TEXT_X, MODE_TEXT_Y, tft.width() - 36, 32, BLACK_COLOR);
+  tft.setTextSize(3);
+  tft.setTextColor(pressureRising ? RED_COLOR : GREEN_COLOR);
+
+  String modeText = pressureRising ? "SINKEN " : "STEIGEN ";
+  tft.setCursor(MODE_TEXT_X + 10, MODE_TEXT_Y);
+  tft.print(modeText);
+
+  String speedStr = (verticalSpeed >= 0 ? "+" : "") + String(verticalSpeed, 1);
+  tft.setCursor(SPEED_VALUE_X, SPEED_VALUE_Y);
+  tft.print(speedStr);
+
+  // Seriell
+  Serial.print("T: ");
+  Serial.print(temp, 1);
+  Serial.print(" °C, P: ");
+  Serial.print(pressure, 1);
+  Serial.print(" Pa, ");
+  Serial.print(pressureRising ? "DOWN" : "UP  ");
+  Serial.print(" ");
+  Serial.print(speedStr);
+  Serial.print(" m/s, Batt%: ");
+  Serial.println(battPercent);
+}
+
+void drawGraph() {
+  int count = historyFull ? HISTORY_SIZE : historyIndex;
+  if (count < 2) return;
+
+  tft.fillRect(GRAPH_X_LEFT, GRAPH_TOP, GRAPH_WIDTH, GRAPH_BOTTOM - GRAPH_TOP + 1, BLACK_COLOR);
+
+  float reference = pressureHistory[(historyIndex - 1 + HISTORY_SIZE) % HISTORY_SIZE];
+  const float MAX_DEVIATION_PA = 20.0f;  // Hohe Empfindlichkeit
+  float scale = ((GRAPH_BOTTOM - GRAPH_TOP) / 2.0f) / MAX_DEVIATION_PA;
+
+  int midY = GRAPH_TOP + (GRAPH_BOTTOM - GRAPH_TOP) / 2;
+  tft.drawFastHLine(GRAPH_X_LEFT, midY, GRAPH_WIDTH, GRAY_COLOR);
+
+  for (int pos = 1; pos < count; pos++) {
+    int idx1 = (historyIndex - count + pos - 1 + HISTORY_SIZE) % HISTORY_SIZE;
+    int idx2 = (historyIndex - count + pos + HISTORY_SIZE) % HISTORY_SIZE;
+
+    int x1 = GRAPH_X_LEFT + (pos - 1) * GRAPH_WIDTH / (HISTORY_SIZE - 1);
+    int x2 = GRAPH_X_LEFT + pos * GRAPH_WIDTH / (HISTORY_SIZE - 1);
+
+    int y1 = midY + (int)((pressureHistory[idx1] - reference) * scale);
+    int y2 = midY + (int)((pressureHistory[idx2] - reference) * scale);
+
+    y1 = constrain(y1, GRAPH_TOP, GRAPH_BOTTOM);
+    y2 = constrain(y2, GRAPH_TOP, GRAPH_BOTTOM);
+
+    tft.drawLine(x1, y1, x2, y2, CYAN_COLOR);
+    tft.drawLine(x1, y1 + 1, x2, y2 + 1, CYAN_COLOR);
+  }
+
+  int currentIdx = (historyIndex - 1 + HISTORY_SIZE) % HISTORY_SIZE;
+  int currentX = GRAPH_X_LEFT + (count - 1) * GRAPH_WIDTH / (HISTORY_SIZE - 1);
+  int currentY = midY + (int)((pressureHistory[currentIdx] - reference) * scale);
+  currentY = constrain(currentY, GRAPH_TOP, GRAPH_BOTTOM);
+  tft.fillCircle(currentX, currentY, 4, WHITE_COLOR);
+}
+
+float getAveragePressure() {
+  float sum = 0;
+  int count = historyFull ? HISTORY_SIZE : historyIndex;
+  if (count == 0) return pressureHistory[0];
+  for (int i = 0; i < count; i++) sum += pressureHistory[i];
+  return sum / count;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+  Serial.println("ESPVARIO RG 12/2025 - V. 0.6 start...");
+
+  pinMode(ONBOARD_RED_LED, OUTPUT);
+  digitalWrite(ONBOARD_RED_LED, LOW);
+  
+  pixel.begin();
+  pixel.setBrightness(80);
+  pixel.clear();
+  pixel.show();
+
+  pinMode(TFT_POWER, OUTPUT);
+  digitalWrite(TFT_POWER, HIGH);
+  pinMode(TFT_BACKLIGHT, OUTPUT);
+  digitalWrite(TFT_BACKLIGHT, HIGH);
+
+  SPI.begin();
+  tft.init(135, 240);
+  tft.setRotation(3);
+
+  Wire.begin();
+  if (!bmp.begin(0x76)) {
+    if (!bmp.begin(0x77)) {
+      Serial.println("BMP280 nicht gefunden!");
+      while (1);
+    }
+  }
+
+  float initialPressure = bmp.readPressure();
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    pressureHistory[i] = initialPressure;
+  }
+
+  drawStartup();
+  startupStartTime = millis();
+
+  updateCounter = 0;
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  if (showStartup) {
+    if (currentMillis - startupStartTime >= startupDuration) {
+      showStartup = false;
+      tft.fillScreen(BLACK_COLOR);
+      drawStaticParts();  // inkl. m/s und voller Rahmen
+      drawGraph();
+    }
+    return;
+  }
+
+  if (currentMillis - previousMeasureMillis >= measureInterval) {
+    previousMeasureMillis = currentMillis;
+
+    float temp = bmp.readTemperature();
+    float pressure = bmp.readPressure();
+
+    float avgPrevious = getAveragePressure();
+
+    if (historyIndex >= 6) {
+      int oldIdx = (historyIndex - 6 + HISTORY_SIZE) % HISTORY_SIZE;
+      float oldPressure = pressureHistory[oldIdx];
+      float dP = pressure - oldPressure;
+      float dt = 3.0;
+      verticalSpeed = - (dP / 100.0) * 8.3 / dt;
+    } else {
+      verticalSpeed = 0.0;
+    }
+
+    pressureHistory[historyIndex] = pressure;
+    historyIndex = (historyIndex + 1) % HISTORY_SIZE;
+    if (historyIndex == 0) historyFull = true;
+
+    bool newRising = (pressure > avgPrevious);
+    if (newRising != pressureRising) {
+      pressureRising = newRising;
+      setLeds();
+    }
+
+    if (updateCounter >= FULL_REFRESH_EVERY) {
+      drawStaticParts();  // Frisches m/s und Rahmen
+      updateCounter = 0;
+    } else {
+      updateCounter++;
+    }
+
+    updateDynamicParts(temp, pressure);
+    drawGraph();
+  }
+}
