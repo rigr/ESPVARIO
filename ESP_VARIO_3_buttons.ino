@@ -1,5 +1,5 @@
 /*
- * ESPVARIO - Vario mit ESP32
+ * ESPVARIO - Vario für Segelflieger mit ESP32
  * ===========================================
  * 
  * Board: ESP32 DevKit (oder kompatibles ESP32 Board)
@@ -109,7 +109,7 @@ Adafruit_NeoPixel pixel(1, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 // Schwellenwert für LED-Aktivierung (kann per Taster geändert werden)
 float pressureThreshold = 1.5;
 
-const int HISTORY_SIZE = 50;
+const int HISTORY_SIZE = 20;   // size of histoy measurements to build average pressure
 float pressureHistory[HISTORY_SIZE];
 int historyIndex = 0;
 bool historyFull = false;
@@ -118,7 +118,7 @@ bool pressureRising = false;
 float verticalSpeed = 0.0;
 
 unsigned long previousMeasureMillis = 0;
-const unsigned long measureInterval = 200; // measurement and screen update rate done here - had it on 300, prefer 200
+const unsigned long measureInterval = 100; // measurement and screen update rate done here - had it on 300, prefer 200
 
 int updateCounter = 0;
 const int FULL_REFRESH_EVERY = 20;
@@ -150,9 +150,9 @@ const int GRAPH_WIDTH = tft.width() - 20;
 #define MS_Y_S          69
 
 // Positionen für Threshold-Anzeige
-#define THRESH_VALUE_X   170  // Rechts vom °C
+#define THRESH_VALUE_X   205  // Rechts vom °C
 #define THRESH_VALUE_Y   10
-#define THRESH_HPA_X     175  // Rechts vom hPa
+#define THRESH_HPA_X     205  // Rechts vom hPa
 #define THRESH_HPA_Y     30
 
 // Taster-Entprellung
@@ -246,12 +246,12 @@ void drawStartup() {
 
   tft.setTextColor(DARK_BLUE);
   tft.setCursor(20, tft.height() / 2 - 10);
-  tft.println("RG 12/2025");
+  tft.println("RG 1/2026");
 
   tft.setTextSize(2);
   tft.setTextColor(DARK_RED);
   tft.setCursor(20, tft.height() / 2 + 30);
-  tft.println("V. 0.9c");
+  tft.println("V. 0.9f");
 }
 
 void drawStaticParts() {
@@ -267,19 +267,20 @@ void drawStaticParts() {
   tft.print("Druck:");
 
   // °C und hPa - jetzt 5px weiter links
-  tft.setCursor(TEMP_VALUE_X + 45, 10);  // war +50
+  tft.setCursor(TEMP_VALUE_X + 41, 10);  // war +50
   tft.print(" C");
-  tft.setCursor(PRESS_VALUE_X + 55, 30);  // war +60
+  tft.setCursor(PRESS_VALUE_X + 51, 30);  // war +60
   tft.print(" hPa");
 
   // Threshold-Anzeige
   tft.setTextColor(CYAN_COLOR);
   tft.setTextSize(1);
-  tft.setCursor(THRESH_VALUE_X, THRESH_VALUE_Y + 5);
-  tft.print(pressureThreshold, 1);
-  tft.print("Pa");
+  tft.setCursor(THRESH_VALUE_X, THRESH_VALUE_Y-2);
+  tft.print("LED:");
+  // tft.print(pressureThreshold, 1);
+  // tft.print("Pa");
   
-  tft.setCursor(THRESH_HPA_X, THRESH_HPA_Y + 5);
+  tft.setCursor(THRESH_HPA_X, THRESH_HPA_Y - 12);
   tft.print(pressureThreshold, 1);
   tft.print("Pa");
 
