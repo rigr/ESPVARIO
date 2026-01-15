@@ -159,7 +159,7 @@ float lastPressure = 0.0;
 
 // Reduzierte Messfrequenz
 unsigned long previousMeasureMillis = 0;
-const unsigned long measureInterval = 500; // 500ms = 2 Messungen/Sekunde (weniger Stress)
+const unsigned long measureInterval = 200; // 500ms = 2 Messungen/Sekunde (weniger Stress), 200ms = 5/sekunde
 
 int updateCounter = 0;
 const int FULL_REFRESH_EVERY = 8;  // Alle 8 Messungen statt 10
@@ -170,7 +170,7 @@ const unsigned long startupDuration = 4000;
 
 // ================== WATCHDOG & RESET TIMING ==================
 unsigned long lastMemoryCheck = 0;
-const unsigned long memoryCheckInterval = 45000;  // Alle 45 Sekunden
+const unsigned long memoryCheckInterval = 15000;  // Alle 15 Sekunden
 unsigned long loopCounter = 0;
 unsigned long lastLoopReport = 0;
 const unsigned long loopReportInterval = 30000;   // Alle 30 Sekunden
@@ -1006,7 +1006,7 @@ void loop() {
       }
 
       static unsigned long lastSerialOutput = 0;
-      if (millis() - lastSerialOutput > 4000) {
+      if (millis() - lastSerialOutput > 1000) {
         lastSerialOutput = millis();
         Serial.print("T:");
         Serial.print(temp, 1);
