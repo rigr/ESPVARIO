@@ -68,21 +68,23 @@
  * stats       - Reset-Statistik anzeigen
  * help        - Hilfe anzeigen
  * 
- * V.13.1 FEATURES:
- * ---------------
- * ✅ Einstellungen im nicht-flüchtigen Speicher (Preferences/NVS)
- * ✅ Reset-Statistik mit Uptime-Tracking
- * ✅ Gesamt-Reboots, längste Uptime, Durchschnitt
- * ✅ Muster-Erkennung (STABLE/UNSTABLE/CRITICAL)
- * ✅ Keine RTC needed - nutzt millis()
- * ✅ Einstellungen überleben Stromtrennung
- * ✅ ESP32-IDF Watchdog mit 8s Panic-Mode
- * ✅ Bei BMP-Fehler → sofortiger Reboot
- * ✅ Bewährte V11 Architektur
+ * V.14 FEATURES - BACK TO BASICS:
+ * ---------------------------------
+ * ✅ STABILITY FIRST - Keine unnötigen Features
+ * ✅ Watchdog: 30s Timeout, kein Panic-Mode
+ * ✅ BMP280 Safe-Mode mit 3 Versuchen bei I2C Problemen
+ * ✅ Memory Guard bei <300KB Heap
+ * ✅ Keine FreeRTOS Tasks (bewährte V11 Architektur)
+ * ✅ ALLE persistenten Features behalten:
+ *   - Settings (Threshold, Backlight, Modus)
+ *   - Reset-Statistik (Boots, Crashes, Uptimes)
+ *   - Crash-Recovery mit 30s Intervall
+ *   - Startup-Statistik (8 Sekunden)
+ * ✅ ESP32-IDF Watchdog stabilisiert
  * 
  * VERSION:
  * --------
- * V. 0.13.1 - Persistent Settings + Reset-Statistik
+ * V. 0.14 - Stability Fix mit bewährter Architektur
  * 
  * Autor: RG 01/2026
  */
@@ -175,10 +177,6 @@ unsigned long lastLoopReport = 0;
 const unsigned long loopReportInterval = 30000;   // Alle 30 Sekunden
 int resetCount = 0;
 
-// Uptime Saving für Crash-Recovery
-unsigned long lastUptimeSave = 0;
-const unsigned long uptimeSaveInterval = 30000;  // Alle 30 Sekunden Uptime speichern
-
 // Stack-Monitoring
 uint32_t stackMinFree = 0;
 
@@ -189,6 +187,15 @@ int consecutiveBMP280Errors = 0;
 const int maxBMP280Errors = 3;  // Bei 3 Fehlern → SOFORT REBOOT!
 bool bmp280Healthy = true;
 unsigned long lastSuccessfulRead = 0;
+
+// Uptime Saving für Crash-Recovery
+unsigned long lastUptimeSave = 0;
+const unsigned long uptimeSaveInterval = 30000;  // Alle 30 Sekunden Uptime speichern
+
+// Memory Guard
+unsigned long lastMemoryGuard = 0;
+const unsigned long memoryGuardInterval = 60000;  // Alle 60 Sekunden Heap prüfen
+const uint32_t criticalHeapThreshold = 300000;   // 300KB kritisch
 
 // Display Management
 bool displayNeedsFullRefresh = true;
@@ -240,7 +247,8 @@ bool backlightOn = true;
 
 // ================== RESET STATISTIK ==================
 struct ResetStats {
-  uint32_t totalReboots;        // Gesamtanzahl Reboots
+  uint32_t totalBoots;         // Gesamtanzahl Boots (alle Starts)
+  uint32_t totalCrashes;        // Anzahl Crashes (ungeplante Reboots)
   uint32_t lastUptimeSeconds;   // Uptime vor dem letzten Reset
   uint32_t maxUptimeSeconds;    // Längste Uptime ever
   uint32_t totalUptimeSeconds;  // Gesamte Laufzeit (akkumuliert)
@@ -267,7 +275,8 @@ void loadSettings() {
   currentMode = (VarioMode)settings.getUChar("mode", 2);
   
   // Reset-Statistik laden
-  resetStats.totalReboots = settings.getUInt("reboots", 0);
+  resetStats.totalBoots = settings.getUInt("boots", 0);
+  resetStats.totalCrashes = settings.getUInt("crashes", 0);
   resetStats.lastUptimeSeconds = settings.getUInt("lastUptime", 0);
   resetStats.maxUptimeSeconds = settings.getUInt("maxUptime", 0);
   resetStats.totalUptimeSeconds = settings.getUInt("totalUptime", 0);
@@ -287,15 +296,31 @@ void loadSettings() {
     case M3_DUAL: Serial.println(" (DUAL)"); break;
   }
   
-  Serial.print("Reset-Statistik: ");
-  Serial.print(resetStats.totalReboots);
-  Serial.println(" Reboots bisher");
+  Serial.print("Boot-Statistik: ");
+  Serial.print(resetStats.totalBoots);
+  Serial.print(" Boots, ");
+  Serial.print(resetStats.totalCrashes);
+  Serial.println(" Crashes");
+  
+  // IMMER Boot-Zähler erhöhen
+  resetStats.totalBoots++;
+  if (resetStats.totalBoots > 9999) {
+    resetStats.totalBoots = 1;  // Bei 10000 wieder bei 1 starten
+  }
+  settings.putUInt("boots", resetStats.totalBoots);
   
   // Crash-Recovery: Gespeicherte Uptime vom letzten Boot auswerten
   if (resetStats.currentUptimeSeconds > 0) {
     Serial.print("Uptime vor dem letzten Boot: ");
     Serial.print(resetStats.currentUptimeSeconds);
-    Serial.println("s (Crash-Recovery)");
+    Serial.println("s (CRASH erkannt!)");
+    
+    // Crash-Zähler erhöhen
+    resetStats.totalCrashes++;
+    if (resetStats.totalCrashes > 9999) {
+      resetStats.totalCrashes = 1;  // Bei 10000 wieder bei 1 starten
+    }
+    settings.putUInt("crashes", resetStats.totalCrashes);
     
     // Letzte Uptime aktualisieren (war vor dem Crash)
     resetStats.lastUptimeSeconds = resetStats.currentUptimeSeconds;
@@ -315,7 +340,12 @@ void loadSettings() {
     resetStats.currentUptimeSeconds = 0;
     settings.putUInt("currentUptime", 0);
     
+    Serial.print("Crash-Statistik: ");
+    Serial.print(resetStats.totalCrashes);
+    Serial.println(" Crashes bisher");
     Serial.println("Crash-Uptime wurde in Statistik übernommen");
+  } else {
+    Serial.println("Normaler Kalt-Boot (kein Crash)");
   }
 }
 
@@ -344,18 +374,10 @@ void saveMode() {
 }
 
 void updateResetStats() {
-  // Reboot-Zähler aktualisieren (mit Modulo 10000)
-  resetStats.totalReboots++;
-  if (resetStats.totalReboots > 9999) {
-    resetStats.totalReboots = 0;
-  }
+  // Diese Funktion wird bei geplanten Reboots aufgerufen
+  // Zählt als geplanter Reboot, nicht als Crash!
   
-  // Statistik speichern
-  settings.putUInt("reboots", resetStats.totalReboots);
-  
-  Serial.print("Reset-Statistik aktualisiert: ");
-  Serial.print(resetStats.totalReboots);
-  Serial.println(" Reboots");
+  Serial.println("Geplanter Reboot - keine Crash-Zählung");
 }
 
 void saveCurrentUptime() {
@@ -364,35 +386,14 @@ void saveCurrentUptime() {
   settings.putUInt("currentUptime", resetStats.currentUptimeSeconds);
 }
 
-void saveUptimeOnShutdown() {
-  unsigned long currentUptime = millis() / 1000;  // in Sekunden
-  
-  // Letzte Uptime speichern
-  resetStats.lastUptimeSeconds = currentUptime;
-  settings.putUInt("lastUptime", resetStats.lastUptimeSeconds);
-  
-  // Maximale Uptime aktualisieren
-  if (currentUptime > resetStats.maxUptimeSeconds) {
-    resetStats.maxUptimeSeconds = currentUptime;
-    settings.putUInt("maxUptime", resetStats.maxUptimeSeconds);
-  }
-  
-  // Gesamte Uptime akkumulieren
-  resetStats.totalUptimeSeconds += currentUptime;
-  settings.putUInt("totalUptime", resetStats.totalUptimeSeconds);
-  
-  Serial.print("Uptime gespeichert: ");
-  Serial.print(currentUptime);
-  Serial.println("s");
-}
-
 void resetSettings() {
   Serial.println("Setze alle Einstellungen auf Default zurück...");
   settings.clear();
   pressureThreshold = 1.5;
   backlightOn = true;
   currentMode = M2_EMA;
-  resetStats.totalReboots = 0;
+  resetStats.totalBoots = 0;
+  resetStats.totalCrashes = 0;
   resetStats.lastUptimeSeconds = 0;
   resetStats.maxUptimeSeconds = 0;
   resetStats.totalUptimeSeconds = 0;
@@ -409,9 +410,9 @@ void resetSettings() {
 }
 
 StabilityPattern getStabilityPattern() {
-  if (resetStats.totalReboots == 0) return STABLE;
+  if (resetStats.totalBoots == 0) return STABLE;
   
-  uint32_t avgUptime = resetStats.totalUptimeSeconds / resetStats.totalReboots;
+  uint32_t avgUptime = resetStats.totalUptimeSeconds / resetStats.totalBoots;
   
   if (avgUptime < 30) return CRITICAL;
   if (avgUptime < 300) return UNSTABLE;  // 5 Minuten
@@ -435,8 +436,17 @@ void formatTime(uint32_t seconds, char* buffer, size_t bufferSize) {
 
 void printResetStats() {
   Serial.println("=== RESET STATISTIK ===");
-  Serial.print("Gesamt-Reboots:   ");
-  Serial.println(resetStats.totalReboots);
+  Serial.print("Gesamt-Boots:     ");
+  Serial.println(resetStats.totalBoots);
+  Serial.print("Gesamt-Crashes:   ");
+  Serial.println(resetStats.totalCrashes);
+  
+  if (resetStats.totalBoots > 0) {
+    float crashRate = (float)resetStats.totalCrashes / resetStats.totalBoots * 100.0;
+    Serial.print("Crash-Rate:        ");
+    Serial.print(crashRate, 1);
+    Serial.println("%");
+  }
   
   char timeBuffer[32];
   formatTime(resetStats.lastUptimeSeconds, timeBuffer, sizeof(timeBuffer));
@@ -451,8 +461,8 @@ void printResetStats() {
   Serial.print("Gesamt-Laufzeit:  ");
   Serial.println(timeBuffer);
   
-  if (resetStats.totalReboots > 0) {
-    uint32_t avgUptime = resetStats.totalUptimeSeconds / resetStats.totalReboots;
+  if (resetStats.totalBoots > 0) {
+    uint32_t avgUptime = resetStats.totalUptimeSeconds / resetStats.totalBoots;
     formatTime(avgUptime, timeBuffer, sizeof(timeBuffer));
     Serial.print("Durchschnitt:      ");
     Serial.println(timeBuffer);
@@ -473,16 +483,16 @@ void printResetStats() {
 
 // ================== WATCHDOG & RESET FUNCTIONS ==================
 void initWatchdog() {
-  // ESP32-IDF Watchdog mit 8 Sekunden Timeout (ESP-IDF v5.x API)
+  // ESP32-IDF Watchdog mit 30 Sekunden Timeout (STABIL!)
   esp_task_wdt_config_t twdt_config = {
-    .timeout_ms = 8000,        // 8 Sekunden Timeout
-    .idle_core_mask = 0,       // Beide Cores überwachen
-    .trigger_panic = true      // Panic-Mode aktiv
+    .timeout_ms = 30000,      // 30 Sekunden Timeout statt 8!
+    .idle_core_mask = 0,      // Beide Cores überwachen
+    .trigger_panic = false    // KEIN Panic-Mode, nur Reset!
   };
   
   esp_task_wdt_init(&twdt_config);
   esp_task_wdt_add(NULL);       // Aktuellen Task zum Watchdog hinzufügen
-  Serial.println("ESP32-IDF Watchdog initialisiert (8s, Panic-Mode)");
+  Serial.println("ESP32-IDF Watchdog initialisiert (30s, No-Panic)");
 }
 
 void feedWatchdog() {
@@ -492,20 +502,42 @@ void feedWatchdog() {
 
 void performHardReboot() {
   // Uptime vor Reset speichern!
-  saveUptimeOnShutdown();
+  saveCurrentUptime();
   
   // Reboot-Statistik aktualisieren
   updateResetStats();
   
-  Serial.println("=== I2C HÄNGT → ESP.restart() ===");
+  Serial.println("=== SYSTEM REBOOT ===");
   Serial.print("Fehlerteiler: ");
   Serial.println(consecutiveBMP280Errors);
   Serial.print("Reboot-Counter: ");
   Serial.println(++resetCount);
-  Serial.println("In der Luft ist ein Neustart 100× besser als Zombie-Vario");
+  Serial.println("Stabiler Reboot für maximale Zuverlässigkeit");
   
   delay(100);  // Kurze Verzögerung für Serial-Ausgabe
-  ESP.restart();  // HARTER REBOOT - kein Zurück mehr!
+  ESP.restart();  // HARTER REBOOT
+}
+
+// ================== MEMORY GUARD ==================
+void checkMemoryGuard() {
+  size_t freeHeap = ESP.getFreeHeap();
+  
+  if (freeHeap < criticalHeapThreshold) {
+    Serial.print("WARNUNG: Heap kritisch niedrig: ");
+    Serial.print(freeHeap);
+    Serial.println(" Bytes - Präventiver Reboot!");
+    
+    saveCurrentUptime();
+    delay(100);
+    ESP.restart();
+  }
+  
+  // Memory Leaks erkennen
+  if (ESP.getMinFreeHeap() < criticalHeapThreshold / 2) {
+    Serial.print("WARNUNG: Min-Heap kritisch: ");
+    Serial.print(ESP.getMinFreeHeap());
+    Serial.println(" Bytes");
+  }
 }
 
 // ================== STACK MONITORING ==================
@@ -529,54 +561,80 @@ void printStackInfo() {
 
 // ================== ROBUSTHEIT FUNCTIONS ==================
 bool safeBMP280Read(float *temp, float *pressure) {
-  unsigned long startTime = millis();
-  const unsigned long i2cTimeout = 150;  // 150ms Timeout
+  const int maxAttempts = 3;
   
-  yield();
-  
-  if (!bmp280Healthy) {
-    return false;
+  for (int attempt = 0; attempt < maxAttempts; attempt++) {
+    unsigned long startTime = millis();
+    const unsigned long i2cTimeout = 300;  // Längerer Timeout!
+    
+    yield();
+    
+    if (!bmp280Healthy) {
+      return false;
+    }
+    
+    // Bei wiederholten Fehlern I2C komplett resetten
+    if (attempt > 0) {
+      Serial.print("BMP280 Versuch ");
+      Serial.print(attempt + 1);
+      Serial.println(" - I2C Reset...");
+      Wire.end();
+      delay(100);
+      Wire.begin();
+      delay(100);
+    }
+    
+    *temp = bmp.readTemperature();
+    
+    if (millis() - startTime > i2cTimeout || isnan(*temp)) {
+      Serial.print("BMP280 Timeout bei Temperatur (Versuch ");
+      Serial.print(attempt + 1);
+      Serial.println(")");
+      consecutiveBMP280Errors++;
+      continue;
+    }
+    
+    yield();
+    
+    *pressure = bmp.readPressure();
+    
+    if (millis() - startTime > i2cTimeout || isnan(*pressure)) {
+      Serial.print("BMP280 Timeout bei Druck (Versuch ");
+      Serial.print(attempt + 1);
+      Serial.println(")");
+      consecutiveBMP280Errors++;
+      continue;
+    }
+    
+    // Prüfe auf plausible Werte
+    if (*pressure < 30000 || *pressure > 110000 || *temp < -40 || *temp > 85) {
+      Serial.print("BMP280 unplausible Werte (Versuch ");
+      Serial.print(attempt + 1);
+      Serial.print("): T=");
+      Serial.print(*temp);
+      Serial.print(" P=");
+      Serial.println(*pressure);
+      consecutiveBMP280Errors++;
+      continue;
+    }
+    
+    // Erfolg bei diesem Versuch
+    consecutiveBMP280Errors = 0;
+    lastSuccessfulRead = millis();
+    
+    if (attempt > 0) {
+      Serial.print("BMP280 erfolgreich nach ");
+      Serial.print(attempt + 1);
+      Serial.println(" Versuchen");
+    }
+    
+    return true;
   }
   
-  *temp = bmp.readTemperature();
-  
-  if (millis() - startTime > i2cTimeout) {
-    Serial.println("BMP280 Timeout bei Temperatur!");
-    consecutiveBMP280Errors++;
-    return false;
-  }
-  
-  yield();
-  
-  *pressure = bmp.readPressure();
-  
-  if (millis() - startTime > i2cTimeout) {
-    Serial.println("BMP280 Timeout bei Druck!");
-    consecutiveBMP280Errors++;
-    return false;
-  }
-  
-  // Prüfe auf plausible Werte
-  if (isnan(*temp) || isnan(*pressure) || *pressure < 30000 || *pressure > 110000) {
-    Serial.print("BMP280 unplausible Werte: T=");
-    Serial.print(*temp);
-    Serial.print(" P=");
-    Serial.println(*pressure);
-    consecutiveBMP280Errors++;
-    return false;
-  }
-  
-  consecutiveBMP280Errors = 0;
-  lastSuccessfulRead = millis();
-  
-  // Bei 3 aufeinanderfolgenden Fehlern → SOFORT REBOOT!
-  if (consecutiveBMP280Errors >= maxBMP280Errors) {
-    Serial.println("I2C hängt → ESP.restart()");
-    delay(100);
-    ESP.restart();
-  }
-  
-  return true;
+  // Alle Versuche fehlgeschlagen
+  Serial.println("BMP280 nach 3 Versuchen fehlgeschlagen - REBOOT!");
+  performHardReboot();
+  return false;
 }
 
 void checkBMP280Health() {
@@ -669,7 +727,7 @@ void printMemoryInfo() {
   Serial.println(" bytes");
   
   Serial.print("Watchdog: ");
-  Serial.println("AKTIV (ESP32-IDF 8s Panic)");
+  Serial.println("AKTIV (ESP32-IDF 30s No-Panic)");
   
   Serial.print("Resets: ");
   Serial.println(resetCount);
@@ -808,7 +866,7 @@ void drawStartup() {
   tft.setTextSize(2);
   tft.setTextColor(DARK_RED);
   tft.setCursor(20, DISPLAY_HEIGHT / 2 + 30);
-  tft.println("V. 0.13.1");
+  tft.println("V. 0.14");
 }
 
 void drawStatsOnDisplay() {
@@ -820,22 +878,40 @@ void drawStatsOnDisplay() {
   tft.setTextColor(WHITE_COLOR);
   tft.setTextSize(2);
   tft.setCursor(10, 10);
-  tft.println("RESET-STATISTIK");
+  tft.println("BOOT-STATISTIK");
 
   tft.setTextSize(1);
   tft.setTextColor(CYAN_COLOR);
   
   char timeBuffer[20];
   
-  // Gesamt-Reboots
+  // Gesamt-Boots
   tft.setCursor(10, 35);
-  tft.print("Reboots: ");
+  tft.print("Boots: ");
   tft.setTextColor(WHITE_COLOR);
-  tft.print(resetStats.totalReboots);
+  tft.print(resetStats.totalBoots);
+  
+  // Gesamt-Crashes
+  tft.setCursor(120, 35);
+  tft.setTextColor(CYAN_COLOR);
+  tft.print("Crashes: ");
+  tft.setTextColor(WHITE_COLOR);
+  tft.print(resetStats.totalCrashes);
+  
+  // Crash-Rate
+  if (resetStats.totalBoots > 0) {
+    float crashRate = (float)resetStats.totalCrashes / resetStats.totalBoots * 100.0;
+    tft.setCursor(10, 50);
+    tft.setTextColor(CYAN_COLOR);
+    tft.print("Crash-Rate: ");
+    tft.setTextColor(WHITE_COLOR);
+    tft.print(crashRate, 1);
+    tft.println("%");
+  }
   
   // Letzte Uptime
   formatTime(resetStats.lastUptimeSeconds, timeBuffer, sizeof(timeBuffer));
-  tft.setCursor(10, 50);
+  tft.setCursor(10, 65);
   tft.setTextColor(CYAN_COLOR);
   tft.print("Letzte: ");
   tft.setTextColor(WHITE_COLOR);
@@ -843,7 +919,7 @@ void drawStatsOnDisplay() {
   
   // Längste Uptime
   formatTime(resetStats.maxUptimeSeconds, timeBuffer, sizeof(timeBuffer));
-  tft.setCursor(10, 65);
+  tft.setCursor(10, 80);
   tft.setTextColor(CYAN_COLOR);
   tft.print("Max: ");
   tft.setTextColor(WHITE_COLOR);
@@ -851,22 +927,11 @@ void drawStatsOnDisplay() {
   
   // Gesamt-Laufzeit
   formatTime(resetStats.totalUptimeSeconds, timeBuffer, sizeof(timeBuffer));
-  tft.setCursor(10, 80);
+  tft.setCursor(10, 95);
   tft.setTextColor(CYAN_COLOR);
   tft.print("Gesamt: ");
   tft.setTextColor(WHITE_COLOR);
   tft.println(timeBuffer);
-  
-  // Durchschnitt
-  if (resetStats.totalReboots > 0) {
-    uint32_t avgUptime = resetStats.totalUptimeSeconds / resetStats.totalReboots;
-    formatTime(avgUptime, timeBuffer, sizeof(timeBuffer));
-    tft.setCursor(10, 95);
-    tft.setTextColor(CYAN_COLOR);
-    tft.print("Avg: ");
-    tft.setTextColor(WHITE_COLOR);
-    tft.println(timeBuffer);
-  }
   
   // Stabilitäts-Pattern
   tft.setCursor(10, 115);
@@ -1084,7 +1149,7 @@ void checkSerialInput() {
       Serial.println("  resetsettings - Einstellungen auf Default zurücksetzen");
       Serial.println("  stats - Zeige Reset-Statistik");
       Serial.println("  help - Zeige diese Hilfe");
-      Serial.println("Watchdog: ESP32-IDF 8s Panic-Mode, Bei BMP-Fehler → REBOOT");
+      Serial.println("Watchdog: ESP32-IDF 30s No-Panic, Memory Guard aktiv");
       Serial.println("Settings: Persistent (überleben Stromtrennung)");
       Serial.println("Statistik: Reset-Tracking mit Uptime-Analyse + Crash-Recovery");
       Serial.println("Taster: D5=Threshold↑, D41=Threshold↓, D42=Hintergrundbeleuchtung, D6=Modus");
@@ -1100,8 +1165,10 @@ void checkSerialInput() {
       }
       Serial.print("  Hintergrundbeleuchtung: ");
       Serial.println(backlightOn ? "EIN" : "AUS");
-      Serial.print("  Gesamt-Reboots: ");
-      Serial.println(resetStats.totalReboots);
+      Serial.print("  Gesamt-Boots: ");
+      Serial.println(resetStats.totalBoots);
+      Serial.print("  Gesamt-Crashes: ");
+      Serial.println(resetStats.totalCrashes);
     } else {
       Serial.println("Unbekannter Befehl. 'help' für Hilfe.");
     }
@@ -1111,13 +1178,10 @@ void checkSerialInput() {
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("ESPVARIO RG 01/2026 - V. 0.13.1 start...");
-  Serial.println("V.13.1 FEATURES: Persistent Settings + Reset-Statistik");
-  Serial.println("Einstellungen und Statistik überleben Stromtrennung!");
-  Serial.println("Statistik wird nach Kalt-Boot angezeigt (8 Sekunden)");
-  Serial.println("Crash-Recovery: Uptime wird alle 30s für Crash-Erkennung gespeichert");
-  Serial.println("ESP32-IDF Watchdog mit 8s Panic-Mode (v5.x API)");
-  Serial.println("Bei BMP-Fehler → sofortiger Reboot");
+  Serial.println("ESPVARIO RG 01/2026 - V. 0.14 start...");
+  Serial.println("V.14 FEATURES: STABILITY FIRST - Back to Basics");
+  Serial.println("Watchdog: 30s No-Panic, BMP280 Safe-Mode, Memory Guard");
+  Serial.println("Alle persistenten Features behalten!");
   Serial.println("Taster: D5=Threshold↑, D41=Threshold↓, D42=Hintergrundbeleuchtung, D6=Modus");
   
   // ERST: Settings laden!
@@ -1193,6 +1257,7 @@ void setup() {
   lastMemoryCheck = millis();
   lastBMP280Check = millis();
   lastUptimeSave = millis();  // Uptime-Saving Timer starten
+  lastMemoryGuard = millis(); // Memory Guard Timer starten
 
   // ESP32-IDF Watchdog initialisieren
   initWatchdog();
@@ -1202,6 +1267,7 @@ void setup() {
 
   Serial.println("Setup abgeschlossen, starte Watchdog-geschützten Betrieb...");
   Serial.println("Einstellungen und Statistik sind persistent und überleben Stromtrennung!");
+  Serial.println("Stabilitäts-Updates aktiviert - sollte viel stabiler laufen!");
 }
 
 void loop() {
@@ -1210,7 +1276,7 @@ void loop() {
   // ESP32-IDF Watchdog explizit füttern
   esp_task_wdt_reset();
   
-  // Regelmäßiges yield() für Arduino Watchdog
+  // Regelmäßiges yield() für Scheduler
   yield();
   
   // Stack-Überwachung alle 1000 Loops
@@ -1229,6 +1295,12 @@ void loop() {
   if (currentMillis - lastUptimeSave >= uptimeSaveInterval) {
     lastUptimeSave = currentMillis;
     saveCurrentUptime();
+  }
+
+  // Memory Guard alle 60 Sekunden
+  if (currentMillis - lastMemoryGuard >= memoryGuardInterval) {
+    lastMemoryGuard = currentMillis;
+    checkMemoryGuard();
   }
 
   if (currentMillis - lastMemoryCheck >= memoryCheckInterval) {
@@ -1347,8 +1419,10 @@ void loop() {
         Serial.print(resetCount);
         Serial.print(" S:");
         Serial.print(settings.isKey("threshold") ? "✓" : "D");
-        Serial.print(" RB:");
-        Serial.print(resetStats.totalReboots);
+        Serial.print(" B:");
+        Serial.print(resetStats.totalBoots);
+        Serial.print(" C:");
+        Serial.print(resetStats.totalCrashes);
         Serial.println(backlightOn ? " BL:ON" : " BL:OFF");
       }
       
