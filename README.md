@@ -4,6 +4,17 @@ Ein einfaches, aber effektives Variometer basierend auf dem **Adafruit Feather E
 
 Das Gerät zeigt Temperatur, Luftdruck, eine Steig-/Sink-Anzeige mit numerischer Steigrate in m/s sowie einen Verlaufsgraph der letzten ca 15 Sekunden. Zusätzlich leuchten die onboard LEDs entsprechend der aktuellen Tendenz.
 
+Version 17c hat nun ein eingebautes Menuu - ducrh Drücken der boot-Taste im Betrieb wird es aktiviert:
+1) Hintergrundbeleuchtung ein/aus  - 3 Sekunden Zeit, wenn erneut gedrückt wird, dann ist das Display aus, wenn wieder gedrückt wird, geht es an.
+2) Threshhold  damit kann eingestellt werden, wiesensibel das Vario ist, um mit der LED Steigen oder Sinken zu signalisieren. durch (mehrmaliges) Drücken von boot wird der Wert erhöht, bis er dann wieder auf Null gestellt wird. Guter Wert ist so um ca 1.5
+3) Modus - Berechnungsmodus des Vario.
+ - Modus 1 nimmt die letzten 20 Messungen, errechnet Durchschnitt und wenn aktuelle Messung um threshhold höher oder niederer ist, dann wird das durch die LED signalisiert.
+ - Modus 2 verwendet eine kompliziertere Methode (Exponential Moving Average Filter)
+ - Modus 3 kombiniert die Methoden (zweifache EMA, schnellere Berechnung)
+5) power off - wenn innerhalb von 3 Sekundenboot gedrückt wird, kann das Ding vom Strom genommen werden und das wird dann als sichere Trennung gespeichert
+
+Es gibt über die serielle Schnittstelle auch Daten - durch "help" werden die möglichen Befehle gelistet.
+
 ## Hardware
 
 - **Board**: "TENSTAR ROBOT" ESP32-S3 mit integriertem 1.14" IPS-TFT-Display (240 × 135 Pixel) und BMP280-Drucksensor  
