@@ -42,7 +42,7 @@
  *   * M2: EMA - Exponential Moving Average Filter
  *   * M3: DUAL - Dual-EMA für schnellere Reaktion
  * 
- * BOOT-TASTEN MENÜ V.17c:
+ * BOOT-TASTEN MENÜ V.18:
  * -----------------------
  * 1) BOOT kurz drücken → Menü startet mit 3-Sekunden-Timer
  * 1a) "Display off" → 3-2-1 Countdown (rot/weiß)
@@ -81,7 +81,7 @@
  * 
  * VERSION:
  * --------
- * V. 0.17c - Simple While-Loop Menu with BOOT Button Detection
+ * V. 0.18 - Simple While-Loop Menu with BOOT Button Detection
  * 
  * Autor: RG 01/2026
  */
@@ -200,7 +200,7 @@ bool displayNeedsFullRefresh = true;
 unsigned long lastDisplayUpdate = 0;
 const unsigned long displayUpdateInterval = 500;  // Max alle 500ms
 
-// ================== BOOT MENU SYSTEM V.17c ==================
+// ================== BOOT MENU SYSTEM V.18 ==================
 enum BootMenuState {
   MENU_INACTIVE,
   MENU_DISPLAY_OFF,
@@ -452,7 +452,7 @@ void formatTime(uint32_t seconds, char* buffer, size_t bufferSize) {
 }
 
 void printResetStats() {
-  Serial.println("=== RESET STATISTIK V.17c ===");
+  Serial.println("=== RESET STATISTIK V.18 ===");
   Serial.print("Gesamt-Boots:       ");
   Serial.println(resetStats.totalBoots);
   Serial.print("Davon Crashes:      ");
@@ -502,7 +502,7 @@ void printResetStats() {
   Serial.println("===============================");
 }
 
-// ================== BOOT MENU SYSTEM V.17c ==================
+// ================== BOOT MENU SYSTEM V.18 ==================
 void drawBootMenu(BootMenuState state, int countdown) {
   tft.fillScreen(BLACK_COLOR);
   tft.drawRect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, BLUE_COLOR);
@@ -598,7 +598,7 @@ void drawBootMenu(BootMenuState state, int countdown) {
 }
 
 void runBootMenu() {
-  Serial.println("=== BOOT MENU V.17c START ===");
+  Serial.println("=== BOOT MENU V.18 START ===");
   
   // Display für Menü aktivieren
   digitalWrite(TFT_BACKLIGHT, HIGH);
@@ -1215,7 +1215,7 @@ void drawStartup() {
   tft.setTextSize(2);
   tft.setTextColor(DARK_RED);
   tft.setCursor(20, DISPLAY_HEIGHT / 2 + 30);
-  tft.println("V. 0.17c");
+  tft.println("V. 0.18");
 }
 
 void drawStatsOnDisplay() {
@@ -1520,7 +1520,7 @@ void checkSerialInput() {
       Serial.println("Watchdog: ESP32-IDF 30s No-Panic, Memory Guard aktiv");
       Serial.println("Settings: Persistent (überleben Stromtrennung)");
       Serial.println("Statistik: Reset-Tracking mit Uptime-Analyse + Crash-Recovery");
-      Serial.println("BOOT Menu V.17c: 3-Sekunden-Timer pro Menüpunkt mit While-Loop");
+      Serial.println("BOOT Menu V.18: 3-Sekunden-Timer pro Menüpunkt mit While-Loop");
       Serial.println("Graceful Shutdown: Display AUS + TH-Buttons (>2s)");
       Serial.println("Taster: D5=Threshold↑, D41=Threshold↓, D42=Hintergrundbeleuchtung, D6=Modus");
       Serial.println("BOOT: 3-Sekunden-Menü (4 Menüpunkte mit While-Loop)");
@@ -1553,8 +1553,8 @@ void checkSerialInput() {
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("ESPVARIO RG 01/2026 - V. 0.17c start...");
-  Serial.println("V.17c FEATURES: SIMPLE WHILE-LOOP MENU SYSTEM");
+  Serial.println("ESPVARIO RG 01/2026 - V. 0.18 start...");
+  Serial.println("V.18 FEATURES: SIMPLE WHILE-LOOP MENU SYSTEM");
   Serial.println("BOOT-Taste: 3-Sekunden-Menü mit 4 Menüpunkten");
   Serial.println("1) Display off 2) Threshold 3) Modus 4) Power off");
   Serial.println("Einfache While-Loop für BOOT-Taste Erkennung im Menü");
@@ -1626,7 +1626,7 @@ void setup() {
   
   // Statistik nach Kalt-Boot im Serial ausgeben
   Serial.println();
-  Serial.println("=== KALT-BOOT STATISTIK V.17c ===");
+  Serial.println("=== KALT-BOOT STATISTIK V.18 ===");
   printResetStats();
   Serial.println("===================================");
   Serial.println();
@@ -1647,7 +1647,7 @@ void setup() {
 
   Serial.println("Setup abgeschlossen, starte Watchdog-geschützten Betrieb...");
   Serial.println("Einstellungen und Statistik sind persistent und überleben Stromtrennung!");
-  Serial.println("BOOT Menu V.17c mit 4 Menüpunkten verfügbar - BOOT-Taste drücken!");
+  Serial.println("BOOT Menu V.18 mit 4 Menüpunkten verfügbar - BOOT-Taste drücken!");
   Serial.println("Einfache While-Loop für zuverlässige BOOT-Taste Erkennung im Menü!");
 }
 
